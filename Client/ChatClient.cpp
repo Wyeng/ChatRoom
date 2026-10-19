@@ -2,6 +2,7 @@
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <iostream>
+#include<string>
 
 ChatClient::ChatClient() :clientSocket(INVALID_SOCKET),winsockInitialized(false)
 {
@@ -68,22 +69,81 @@ bool ChatClient::connectServer(const char* ip, unsigned short port)
 
 bool ChatClient::sendMessage(const char* message)
 {
-	int bytesSent = send(
+	// 添加 '\n' 作为消息分隔符，便于接收端识别消息边界
+	std::string sendData = message;
+	sendData += '\n';
+	int totalBytes = static_cast<int>(sendData.size());
+	int totalSent = 0;
+
+	while (totalSent < totalBytes)
+	{
+		int bytesSent = send(
+			clientSocket,
+			sendData.c_str()+totalSent,	// 从尚未发送的位置继续
+			totalBytes-totalSent,	// 只发送剩余字符
+			0
+		);
+		// 如果send失败进行处理
+		if (bytesSent == SOCKET_ERROR)
+		{
+			std::cerr << "send failed: "
+				<< WSAGetLastError() << std::endl;
+			return false;
+		}
+
+		if (bytesSent == 0)
+		{
+			std::cerr << "send returned 0." << std::endl;
+			return false;
+		}
+
+		// 更新totalSent
+		totalSent += bytesSent;
+	}
+
+	//std::cout << "Message sent successfully." << std::endl;
+	return true;
+}
+
+ReceiveStatus ChatClient::receiveMessage(int& errorCode, std::mutex& consoleMutex, const std::string& username, const std::string& message)
+{
+	errorCode = 0;
+	char buffer[1024]{};
+
+	int bytesReceived = recv(
 		clientSocket,
-		message,
-		static_cast<int>(strlen(message)),
+		buffer,
+		static_cast<int>(sizeof(buffer) - 1),
 		0
 	);
 
-	if (bytesSent == SOCKET_ERROR)
+	if (bytesReceived > 0)
 	{
-		std::cerr << "send failed: "
-			<< WSAGetLastError() << std::endl;
-		return false;
+		buffer[bytesReceived] = '\0';
+		{
+			std::lock_guard<std::mutex> lock(consoleMutex);
+
+			// 清除当前输入行并换行
+			std::cout << "\r" << std::string(120, ' ') << "\r";
+
+			// 显示收到的消息
+			std::cout << buffer;
+
+			// 恢复当前输入行
+			std::cout << username << ": "
+				<< message << std::flush;
+		}
+		return ReceiveStatus::Success;
 	}
 
-	std::cout << "Message sent successfully." << std::endl;
-	return true;
+	if (bytesReceived == 0)
+	{
+		std::cout << "Server disconnected." << std::endl;
+		return ReceiveStatus::Disconnected;
+	}
+
+	errorCode = WSAGetLastError();
+	return ReceiveStatus::Error;
 }
 
 void ChatClient::cleanup()
